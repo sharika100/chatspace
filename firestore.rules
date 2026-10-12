@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // User profile documents
+    match /users/{userId} {
+      // Any authenticated user can read user profiles (for display names, avatars)
+      allow read: if isAuthenticated();
+      
+      // Users can only create or update their own profile document
+      allow create, update: if isOwner(userId)
+        && request.resource.data.keys().hasAll(['uid', 'displayName', 'email'])
+        && request.resource.data.uid == userId
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 2
+        && request.resource.data.displayName.size() <= 50
+        && request.resource.data.email is string;
+
+      allow delete: if false; // Profile deletion prevented from client
+    }
+
+    // Chat rooms collection
+    match /rooms/{roomId} {
+      // Authenticated users can list and read chat rooms
+      allow read: if isAuthenticated();
+
+      // Authenticated users can create new rooms with valid structure
+      allow create: if isAuthenticated()
+        && request.resource.data.keys().hasAll(['name', 'createdBy', 'createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.trim().size() >= 2
+        && request.resource.data.name.size() <= 50
+        && request.resource.data.createdBy == request.auth.uid
+        && (!('description' in request.resource.data) || (request.resource.data.description is string && request.resource.data.description.size() <= 200));
+
+      // Disallow client deletion or arbitrary modification of room metadata
+      allow update, delete: if false;
+
+      // Messages subcollection within a room
+      match /messages/{messageId} {
+        // Authenticated users can read messages within the room
+        allow read: if isAuthenticated();
+
+        // Creating a message
+        allow create: if isAuthenticated()
+          && request.resource.data.keys().hasAll(['senderId', 'senderName', 'text', 'createdAt'])
+          // Anti-impersonation: senderId must match authenticated user's UID
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.senderName is string
+          && request.resource.data.senderName.size() >= 1
+          && request.resource.data.senderName.size() <= 50
+          // Message text validation: non-empty string, maximum 1000 characters
+          && request.resource.data.text is string
+          && request.resource.data.text.trim().size() > 0
+          && request.resource.data.text.size() <= 1000;
+
+        // Messages are immutable once posted to preserve chat audit history
+        allow update, delete: if false;
+      }
+    }
+
+    // Deny all other access by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
